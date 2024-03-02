@@ -18,6 +18,7 @@
 #
 
 ARG BASE_IMAGE=oracle/database:19.3.0-ee
+# hadolint ignore=DL3006
 FROM ${BASE_IMAGE}
 
 # Extn name
@@ -25,18 +26,18 @@ ARG EXTENSION_NAME=k8s
 
 # Environment variables required for this build (do NOT change)
 # -------------------------------------------------------------
-ENV ORACLE_SID=ORCLCDB \
-    STARTUP_FILE=startUp.sh \
+ENV STARTUP_FILE=startUp.sh \
     SHUT_DB_FILE=shutDown.sh \
     LOCKING_SCRIPT=lock.py \
     SWAP_LOCK_FILE=swapLocks.sh \
     CHECK_DB_LOCK_FILE=checkDBLockStatus.sh
 
 # Turn on dnfs
-RUN cd $ORACLE_HOME/rdbms/lib && make -f ins_rdbms.mk dnfs_on
+# hadolint ignore=DL3003
+RUN cd "$ORACLE_HOME"/rdbms/lib && make -f ins_rdbms.mk dnfs_on
 
 # Updated Health Check
-HEALTHCHECK --interval=1m --start-period=30m \
+HEALTHCHECK --interval=1m --start-period=15m \
    CMD "$ORACLE_BASE/$CHECK_DB_LOCK_FILE" >/dev/null || exit 1
 
 # backup original runOracle
@@ -57,4 +58,4 @@ RUN if test -e "$ORACLE_BASE/$RUN_FILE.extended"; then \
     if ! grep "$RUN_FILE.$EXTENSION_NAME" "$ORACLE_BASE/$RUN_FILE"; then \
         sed  -i "1i . $ORACLE_BASE/$RUN_FILE.$EXTENSION_NAME" "$ORACLE_BASE/$RUN_FILE"; \
     fi && \
-    chmod ug+x $ORACLE_BASE/*.sh $ORACLE_BASE/scripts/extensions/setup/*.sh $ORACLE_BASE/*.py && sync
+    chmod ug+x "$ORACLE_BASE"/*.sh "$ORACLE_BASE"/scripts/extensions/setup/*.sh "$ORACLE_BASE"/*.py && sync

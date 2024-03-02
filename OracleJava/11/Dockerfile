@@ -1,16 +1,16 @@
-# Copyright (c) 2019,2021 Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 2019, 2023 Oracle and/or its affiliates.
 #
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl.
 #
 # ORACLE DOCKERFILES PROJECT
 # --------------------------
-# This is the Dockerfile for Oracle JDK 11
+# This is the Dockerfile for Oracle JDK 11 on Oracle Linux 7
 #
 # REQUIRED FILES TO BUILD THIS IMAGE
 # ----------------------------------
 #
-# (1) jdk-11.XX_linux-x64_bin.tar.gz
-#     Download from https://www.oracle.com/java/technologies/javase-jdk11-downloads.html
+# (1) jdk-11.XX_linux-x64_bin.tar.gz or jdk-11.XX_linux-aarch64_bin.tar.gz
+#     Download from https://www.oracle.com/java/technologies/downloads/
 #
 # HOW TO BUILD THIS IMAGE
 # -----------------------
@@ -25,30 +25,36 @@
 
 FROM oraclelinux:7-slim as builder
 
-MAINTAINER Aurelio Garcia-Ribeyro <aurelio.garciaribeyro@oracle.com>
+LABEL maintainer="Aurelio Garcia-Ribeyro <aurelio.garciaribeyro@oracle.com>"
 
-RUN set -eux; \
-	yum install -y \
-		gzip \
-		tar;
+RUN yum install -y gzip tar
+		
 	
 # Default to UTF-8 file.encoding
 ENV LANG en_US.UTF-8
 
 
-# Environment variables for the builder image.  
+# Environment variables for the builder image.
 # Required to validate that you are using the correct file
 
-ENV JAVA_PKG=jdk-11.0.12_linux-x64_bin.tar.gz \
-	JAVA_SHA256=d5d45826f835bd1ea069f9ff8bcd0f23c9f05c8d063b7df821960cfa765ed2cb \
-	JAVA_HOME=/usr/java/jdk-11
+ENV JAVA_HOME=/usr/java/jdk-11
 
 ##
-COPY $JAVA_PKG /tmp/jdk.tgz
+COPY *.tar.gz /tmp/
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN set -eux; \
-	echo "$JAVA_SHA256 */tmp/jdk.tgz" | sha256sum -c -; \
+	ARCH="$(uname -m)" && \
+    if [ "$ARCH" = "x86_64" ]; \
+    then \
+		mv "$(ls /tmp/jdk-11*_linux-x64_bin.tar.gz)" /tmp/jdk.tar.gz ; \
+        JAVA_SHA256=f9eaf0f224fac4ff26f146089181a155d547ebcf2e033cf4cc850efa228086ba ; \
+    else \
+	    mv "$(ls /tmp/jdk-11*_linux-aarch64_bin.tar.gz)" /tmp/jdk.tar.gz ; \
+    	JAVA_SHA256=97ee39f2a39ab9612a06b0d56882571f701cad082b7cf169b5cfdee174aec7eb ; \    	
+    fi && \
+	echo "$JAVA_SHA256 */tmp/jdk.tar.gz" | sha256sum -c -; \
 	mkdir -p "$JAVA_HOME"; \
-	tar --extract --file /tmp/jdk.tgz --directory "$JAVA_HOME" --strip-components 1
+	tar --extract --file /tmp/jdk.tar.gz --directory "$JAVA_HOME" --strip-components 1
 	
 ## Get a fresh version of SLIM for the final image	
 FROM oraclelinux:7-slim
@@ -56,8 +62,7 @@ FROM oraclelinux:7-slim
 # Default to UTF-8 file.encoding
 ENV LANG en_US.UTF-8
 
-ENV JAVA_VERSION=11.0.12 \
-	JAVA_HOME=/usr/java/jdk-11
+ENV JAVA_HOME=/usr/java/jdk-11
 
 ENV	PATH $JAVA_HOME/bin:$PATH	
 

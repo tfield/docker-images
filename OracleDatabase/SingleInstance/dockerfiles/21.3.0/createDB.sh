@@ -1,7 +1,7 @@
 #!/bin/bash
 # LICENSE UPL 1.0
 #
-# Copyright (c) 1982-2021 Oracle and/or its affiliates. All rights reserved.
+# Copyright (c) 1982-2022 Oracle and/or its affiliates. All rights reserved.
 # 
 # Since: November, 2016
 # Author: gerald.venzl@oracle.com
@@ -20,7 +20,8 @@ function setupNetworkConfig {
   mkdir -p "$ORACLE_BASE_HOME"/network/admin
 
   # sqlnet.ora
-  echo "NAMES.DIRECTORY_PATH= (TNSNAMES, EZCONNECT, HOSTNAME)" > "$ORACLE_BASE_HOME"/network/admin/sqlnet.ora
+  echo "NAMES.DIRECTORY_PATH= (TNSNAMES, EZCONNECT, HOSTNAME)
+DISABLE_OOB=ON" > "$ORACLE_BASE_HOME"/network/admin/sqlnet.ora
 
   # listener.ora
   echo "LISTENER = 
@@ -53,11 +54,124 @@ function setupTnsnames {
 
 }
 
+function setupNetworkConfigXE {
+  # sqlnet.ora
+  echo "NAMES.DIRECTORY_PATH= (TNSNAMES, EZCONNECT, HOSTNAME)
+DISABLE_OOB=ON" > "$ORACLE_BASE_HOME"/network/admin/sqlnet.ora
+
+  # listener.ora 
+   echo "# listener.ora Network Configuration File:
+         
+SID_LIST_LISTENER = 
+  (SID_LIST =
+    (SID_DESC =
+      (SID_NAME = PLSExtProc)
+      (ORACLE_HOME = $ORACLE_HOME)
+      (PROGRAM = extproc)
+    )
+  )
+
+LISTENER =
+  (DESCRIPTION_LIST =
+    (DESCRIPTION =
+      (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC_FOR_XE))
+      (ADDRESS = (PROTOCOL = TCP)(HOST = 0.0.0.0)(PORT = 1521))
+    )
+  )
+
+DEFAULT_SERVICE_LISTENER = (XE)" > "$ORACLE_BASE_HOME"/network/admin/listener.ora
+
+# TNS Names.ora
+   echo "# tnsnames.ora Network Configuration File:
+
+XE =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = 0.0.0.0)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = XE)
+    )
+  )
+
+LISTENER_XE =
+  (ADDRESS = (PROTOCOL = TCP)(HOST = 0.0.0.0)(PORT = 1521))
+
+XEPDB1 =
+  (DESCRIPTION =
+    (ADDRESS = (PROTOCOL = TCP)(HOST = 0.0.0.0)(PORT = 1521))
+    (CONNECT_DATA =
+      (SERVER = DEDICATED)
+      (SERVICE_NAME = XEPDB1)
+    )
+  )
+
+EXTPROC_CONNECTION_DATA =
+  (DESCRIPTION =
+     (ADDRESS_LIST =
+       (ADDRESS = (PROTOCOL = IPC)(KEY = EXTPROC_FOR_XE))
+     )
+     (CONNECT_DATA =
+       (SID = PLSExtProc)
+       (PRESENTATION = RO)
+     )
+  )
+" > "$ORACLE_BASE_HOME"/network/admin/tnsnames.ora
+}
+
+function dbSetupSQL {
+  # Remove second control file, fix local_listener, make PDB auto open, enable EM global port
+  # Create externally mapped oracle user for health check
+  sqlplus / as sysdba << EOF
+ALTER SYSTEM SET control_files='$ORACLE_BASE/oradata/$ORACLE_SID/control01.ctl' scope=spfile;
+ALTER SYSTEM SET local_listener='';
+ALTER PLUGGABLE DATABASE $ORACLE_PDB SAVE STATE;
+EXEC DBMS_XDB_CONFIG.SETGLOBALPORTENABLED (TRUE);
+
+ALTER SESSION SET "_oracle_script" = true;
+CREATE USER OPS\$oracle IDENTIFIED EXTERNALLY;
+GRANT CREATE SESSION TO OPS\$oracle;
+GRANT SELECT ON sys.v_\$pdbs TO OPS\$oracle;
+GRANT SELECT ON sys.v_\$database TO OPS\$oracle;
+ALTER USER OPS\$oracle SET container_data=all for sys.v_\$pdbs container = current;
+
+exit;
+EOF
+
+}
+
 ###################################
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
 ############# MAIN ################
 # !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!! #
 ###################################
+
+# Creating database for XE edition
+if [ "${ORACLE_SID}" = "XE" ]; then
+  # Auto generate ORACLE PWD if not passed on
+  export ORACLE_PWD=${ORACLE_PWD:-"$(openssl rand -hex 8)"}
+  
+  # Set character set
+  su -c "sed -i -e \"s|^CHARSET=.*$|CHARSET=$ORACLE_CHARACTERSET|g\" /etc/sysconfig/\"$CONF_FILE\""
+
+  # Creating Database
+  su -c "/etc/init.d/oracle-xe-21c configure << EOF
+${ORACLE_PWD}
+${ORACLE_PWD}
+EOF
+"
+# Setting up network config for XE database
+setupNetworkConfigXE;
+
+# Setting up database
+dbSetupSQL;
+
+# Making Oracle Database EM Express available remotely for XE
+sqlplus / as sysdba << EOF
+EXEC DBMS_XDB.SETLISTENERLOCALACCESS(FALSE);
+EOF
+
+exit 0
+fi;
 
 # Check whether ORACLE_SID is passed on
 export ORACLE_SID=${1:-ORCLCDB}
@@ -90,8 +204,6 @@ else
     cat > "$ORACLE_BASE"/dbca.rsp <<EOF
 sysPassword=${ORACLE_PWD}
 EOF
-    # Reverting umask to original value
-    umask 022
 
     export DBCA_CRED_OPTIONS=" -responseFile $ORACLE_BASE/dbca.rsp"
   else
@@ -105,6 +217,9 @@ fi
 
 # Clone DB/ Standby DB creation path
 if [[ "${CLONE_DB}" == "true" ]] || [[ "${STANDBY_DB}" == "true" ]]; then
+  # Reverting umask to original value for clone/standby DB cases
+  umask 022
+
   # Validation: Check if PRIMARY_DB_CONN_STR is provided or not
   if [[ -z "${PRIMARY_DB_CONN_STR}" ]] || [[ $PRIMARY_DB_CONN_STR != *:*/* ]]; then
     echo "ERROR: Please provide PRIMARY_DB_CONN_STR in <HOST>:<PORT>/<SERVICE_NAME> format to connect with primary database. Exiting..."
@@ -117,11 +232,15 @@ if [[ "${CLONE_DB}" == "true" ]] || [[ "${STANDBY_DB}" == "true" ]]; then
   # Creating the database using the dbca command
   if [ "${STANDBY_DB}" = "true" ]; then
     # Creating standby database
+    # Ignoring shell check so as to treat DBCA_CRED_OPTIONS as separate args to dbca
+    # shellcheck disable=SC2086
     dbca -silent -createDuplicateDB -gdbName "$PRIMARY_DB_NAME" -primaryDBConnectionString "$PRIMARY_DB_CONN_STR" ${DBCA_CRED_OPTIONS} -sid "$ORACLE_SID" -createAsStandby -dbUniquename "$ORACLE_SID" ORACLE_HOSTNAME="$ORACLE_HOSTNAME" ||
       cat /opt/oracle/cfgtoollogs/dbca/"$ORACLE_SID"/"$ORACLE_SID".log ||
       cat /opt/oracle/cfgtoollogs/dbca/"$ORACLE_SID".log
   else
     # Creating clone database after duplicating a primary database; CLONE_DB is set to true here
+    # Ignoring shell check so as to treat DBCA_CRED_OPTIONS as separate args to dbca
+    # shellcheck disable=SC2086
     dbca -silent -createDuplicateDB -gdbName "$ORACLE_SID" -primaryDBConnectionString "$PRIMARY_DB_CONN_STR" ${DBCA_CRED_OPTIONS} -sid "$ORACLE_SID" -databaseConfigType SINGLE -useOMF true -dbUniquename "$ORACLE_SID" ORACLE_HOSTNAME="$ORACLE_HOSTNAME" ||
       cat /opt/oracle/cfgtoollogs/dbca/"$ORACLE_SID"/"$ORACLE_SID".log ||
       cat /opt/oracle/cfgtoollogs/dbca/"$ORACLE_SID".log
@@ -163,18 +282,26 @@ fi
 
 # If both INIT_SGA_SIZE & INIT_PGA_SIZE aren't provided by user
 if [[ "${INIT_SGA_SIZE}" == "" && "${INIT_PGA_SIZE}" == "" ]]; then
-    # If there is greater than 8 CPUs default back to dbca memory calculations
-    # dbca will automatically pick 40% of available memory for Oracle DB
-    # The minimum of 2G is for small environments to guarantee that Oracle has enough memory to function
-    # However, bigger environment can and should use more of the available memory
-    # This is due to Github Issue #307
-    if [ "$(nproc)" -gt 8 ]; then
-        sed -i -e "s|totalMemory=2048||g" "$ORACLE_BASE"/dbca.rsp
-    fi;
+    # If AUTO_MEM_CALCULATION isn't set to false and a given amount of memory is allocated,
+    # we set the total memory with the amount of memory allocated for the container.
+    # Otherwise, we keep the default of 2GB.
+    if [[ "${AUTO_MEM_CALCULATION}" != "false" && "${ALLOCATED_MEMORY}" -le 655360 ]]; then
+      sed -i -e "s|totalMemory=.*|totalMemory=${ALLOCATED_MEMORY?}|g" "$ORACLE_BASE"/dbca.rsp
+    fi
 else
-    sed -i -e "s|totalMemory=2048||g" "$ORACLE_BASE"/dbca.rsp
+    sed -i -e "s|totalMemory=.*||g" "$ORACLE_BASE"/dbca.rsp
     sed -i -e "s|initParams=.*|&,sga_target=${INIT_SGA_SIZE}M,pga_aggregate_target=${INIT_PGA_SIZE}M|g" "$ORACLE_BASE"/dbca.rsp
-fi;
+fi
+
+# Adding INIT_CPU_COUNT initParam if provided
+if [ -n "${INIT_CPU_COUNT}" ]; then
+  sed -i -e "s|initParams=.*|&,cpu_count=${INIT_CPU_COUNT}|g" "$ORACLE_BASE"/dbca.rsp
+fi
+
+# Adding INIT_PROCESSES initParam if provided
+if [ -n "${INIT_PROCESSES}" ]; then
+  sed -i -e "s|initParams=.*|&,processes=${INIT_PROCESSES}|g" "$ORACLE_BASE"/dbca.rsp
+fi
 
 # Create network related config files (sqlnet.ora, tnsnames.ora, listener.ora)
 setupNetworkConfig;
@@ -183,6 +310,8 @@ setupNetworkConfig;
 export ARCHIVELOG_DIR=$ORACLE_BASE/oradata/$ORACLE_SID/$ARCHIVELOG_DIR_NAME
 
 # Start LISTENER and run DBCA
+# Ignoring shell check so as to treat DBCA_CRED_OPTIONS as separate args to dbca
+# shellcheck disable=SC2086
 lsnrctl start &&
 dbca -silent -createDatabase -enableArchive "$ENABLE_ARCHIVELOG" -archiveLogDest "$ARCHIVELOG_DIR" ${DBCA_CRED_OPTIONS} -responseFile "$ORACLE_BASE"/dbca.rsp ||
  cat /opt/oracle/cfgtoollogs/dbca/"$ORACLE_SID"/"$ORACLE_SID".log ||
@@ -191,23 +320,8 @@ dbca -silent -createDatabase -enableArchive "$ENABLE_ARCHIVELOG" -archiveLogDest
 # Setup tnsnames.ora after execution of DBCA command to prevent getting overwritten
 setupTnsnames;
 
-# Remove second control file, fix local_listener, make PDB auto open, enable EM global port
-# Create externally mapped oracle user for health check
-  sqlplus / as sysdba << EOF
-ALTER SYSTEM SET control_files='$ORACLE_BASE/oradata/$ORACLE_SID/control01.ctl' scope=spfile;
-ALTER SYSTEM SET local_listener='';
-ALTER PLUGGABLE DATABASE $ORACLE_PDB SAVE STATE;
-EXEC DBMS_XDB_CONFIG.SETGLOBALPORTENABLED (TRUE);
-
-ALTER SESSION SET "_oracle_script" = true;
-CREATE USER OPS\$oracle IDENTIFIED EXTERNALLY;
-GRANT CREATE SESSION TO OPS\$oracle;
-GRANT SELECT ON sys.v_\$pdbs TO OPS\$oracle;
-GRANT SELECT ON sys.v_\$database TO OPS\$oracle;
-ALTER USER OPS\$oracle SET container_data=all for sys.v_\$pdbs container = current;
-
-exit;
-EOF
+# Setting up database
+dbSetupSQL;
 
 # Remove temporary response file
 rm "$ORACLE_BASE"/dbca.rsp

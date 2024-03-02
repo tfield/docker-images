@@ -1,4 +1,4 @@
-# Copyright (c) 2020 Oracle and/or its affiliates.
+# Copyright (c) 2020, 2023, Oracle and/or its affiliates.
 #
 # Licensed under the Universal Permissive License v 1.0 as shown at https://oss.oracle.com/licenses/upl.
 #
@@ -47,7 +47,9 @@ RUN mkdir -p /u01 && \
     mkdir ${OPATCH_PATCH_DIR} && \
     chown -R oracle:root /u01 && \
     chown -R oracle:root ${PATCH_DIR} && \
-    chown -R oracle:root ${OPATCH_PATCH_DIR}  
+    chown -R oracle:root ${OPATCH_PATCH_DIR}
+RUN yum install -y hostname perl openldap openldap-clients && \
+    rm -rf /var/cache/yum
 
 #
 # Copy files and packages for install
@@ -116,7 +118,8 @@ RUN patchzips=`ls ${PATCH_DIR}/p*.zip 2>/dev/null`; \
       echo -e "\nNo patches present in patches directory. Skipping patch application."; \
     fi
     
-RUN rm -rf /u01/oracle/idm/server/ConnectorDefaultDirectory && \
+RUN cp -rf /u01/oracle/idm/server/ConnectorDefaultDirectory /u01/oracle/idm/server/ConnectorDefaultDirectory_orig && \
+    rm -rf /u01/oracle/idm/server/ConnectorDefaultDirectory && \
     ln -s  /u01/oracle/user_projects/domains/ConnectorDefaultDirectory /u01/oracle/idm/server/ConnectorDefaultDirectory && \
     if $ORACLE_HOME/OPatch/opatch lsinventory  -oh $ORACLE_HOME -jre $JAVA_HOME | egrep -q '23855729|24204843|24325050' ; then \
      echo "Ready End Point already Configured."; \

@@ -1,5 +1,5 @@
 #!/bin/bash
-## Copyright (c) 2021, Oracle and/or its affiliates.
+## Copyright (c) 2022, Oracle and/or its affiliates.
 set -e
 
 ##
@@ -26,6 +26,9 @@ function abort() {
 [[ -d "${OGG_TEMPORARY_FILES}" ]] || abort "Deployment temporary storage, '${OGG_TEMPORARY_FILES}', not found."
 :     "${OGG_HOME:?}"
 [[ -d "${OGG_HOME}"            ]] || abort "Deployment runtime, '${OGG_HOME}'. not found."
+
+:     "${OGG_DEPLOYMENT_SCRIPTS:?}"
+[[ -d "${OGG_DEPLOYMENT_SCRIPTS}" ]] || abort "OGG deployment scripts storage, '${OGG_DEPLOYMENT_SCRIPTS}', not found."
 
 NGINX_CRT="$(awk '$1 == "ssl_certificate"     { gsub(/;/, ""); print $NF; exit }' < /etc/nginx/nginx.conf)"
 NGINX_KEY="$(awk '$1 == "ssl_certificate_key" { gsub(/;/, ""); print $NF; exit }' < /etc/nginx/nginx.conf)"
@@ -73,6 +76,24 @@ function locate_java() {
 }
 
 ##
+##  l o c a t e _ l  i  b _  j  v  m
+##  Locate the shared library libjvm.so and set LD_LIBRARY_PATH
+##
+function locate_lib_jvm() {
+    [[ -z "${JAVA_HOME}" ]] && abort "Java installation not found"
+
+    local libjvm
+    libjvm="$(find "${JAVA_HOME}" -name libjvm.so | head -1)"
+    if [ -z "${libjvm}" ]; then
+        echo "Warning: The shared library libjvm.so cannot be located."
+    else
+        local JVM_LIBRARY_PATH
+        JVM_LIBRARY_PATH="$(dirname "${libjvm}" )"
+        export LD_LIBRARY_PATH=$JVM_LIBRARY_PATH:$LD_LIBRARY_PATH
+    fi
+}
+
+##
 ##  r u n _ a s _ o g g
 ##  Return a string used for running a process as the 'ogg' user
 ##
@@ -101,6 +122,52 @@ function setup_deployment_directories() {
     chmod    0750    "${OGG_DEPLOYMENT_HOME}" "${OGG_TEMPORARY_FILES}"
     find             "${OGG_DEPLOYMENT_HOME}" "${OGG_TEMPORARY_FILES}" -mindepth 1 -maxdepth 1 -not -name '.*' -exec \
     chown -R ogg:ogg {} \;
+}
+
+##
+##  r u n _ u s e r _ s c r i p t s
+##
+## Hook for launching custom scripts in the container before and after ogg start
+##     Default Values:
+##       - ${OGG_DEPLOYMENT_SCRIPTS}          : "${OGG_HOME}/scripts"
+##
+## Scripts are run lexicographically and recursively from the directories pointed to by:
+##      - ${OGG_DEPLOYMENT_SCRIPTS}/setup are executed prior to any other steps in the boot sequence
+##      - ${OGG_DEPLOYMENT_SCRIPTS}/startup are executed after ogg/nginx startup
+##
+function run_user_scripts {
+
+    local SCRIPTS_ROOT="${1}";
+
+    [ -z "$SCRIPTS_ROOT" ] && {
+        printf "%s: No SCRIPTS_ROOT passed on, no scripts will be run\n" "${0}";
+        return 1;
+    } || {
+        if [ -d "$SCRIPTS_ROOT" ] && [ -n "$(ls -A "$SCRIPTS_ROOT")" ]; then
+            printf "Executing user defined scripts in: %s\n" "${SCRIPTS_ROOT}"
+
+            for f in "${SCRIPTS_ROOT}"/*; do
+                [ -d "${f}" ] && {
+                    run_user_scripts "${f}"
+                } || {
+                    case "$f" in
+                        *.sh)
+                                printf "%s: running %s\n" "${0}" "${f}";
+                                source "$f" && state=$? || state=$?
+                                ;;
+                        *)
+                                printf "%s: ignoring %s\n" "${0}" "${f}" && state=$? || state=$?
+                                ;;
+                    esac
+                    echo "";
+                }
+            done
+            echo "DONE: Executing user defined scripts"
+            echo "";
+        fi
+    }
+
+    return 0
 }
 
 ##
@@ -151,10 +218,13 @@ function signal_handling() {
 ##
 ##  Entrypoint
 ##
+run_user_scripts "${OGG_DEPLOYMENT_SCRIPTS}/setup"
 generatePassword
 setup_deployment_directories
 locate_java
+locate_lib_jvm
 start_ogg
 start_nginx
 signal_handling
+run_user_scripts "${OGG_DEPLOYMENT_SCRIPTS}/startup"
 wait

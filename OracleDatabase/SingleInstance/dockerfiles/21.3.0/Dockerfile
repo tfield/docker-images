@@ -1,6 +1,6 @@
 # LICENSE UPL 1.0
 #
-# Copyright (c) 2018, 2021 Oracle and/or its affiliates.
+# Copyright (c) 2018, 2022 Oracle and/or its affiliates.
 #
 # ORACLE DOCKERFILES PROJECT
 # --------------------------
@@ -36,6 +36,7 @@ LABEL "provider"="Oracle"                                               \
 
 # Argument to control removal of components not needed after db software installation
 ARG SLIMMING=true
+ARG INSTALL_FILE_1="LINUX.X64_213000_db_home.zip"
 
 # Environment variables required for this build (do NOT change)
 # -------------------------------------------------------------
@@ -43,7 +44,7 @@ ENV ORACLE_BASE=/opt/oracle \
     ORACLE_HOME=/opt/oracle/product/21c/dbhome_1 \
     ORACLE_BASE_HOME=/opt/oracle/homes/OraDB21Home1 \
     INSTALL_DIR=/opt/install \
-    INSTALL_FILE_1="LINUX.X64_213000_db_home.zip" \
+    INSTALL_FILE_1=$INSTALL_FILE_1 \
     INSTALL_RSP="db_inst.rsp" \
     CONFIG_RSP="dbca.rsp.tmpl" \
     PWD_FILE="setPassword.sh" \
@@ -57,6 +58,7 @@ ENV ORACLE_BASE=/opt/oracle \
     USER_SCRIPTS_FILE="runUserScripts.sh" \
     INSTALL_DB_BINARIES_FILE="installDBBinaries.sh" \
     RELINK_BINARY_FILE="relinkOracleBinary.sh" \
+    CONFIG_TCPS_FILE="configTcps.sh" \
     SLIMMING=$SLIMMING \
     ENABLE_ARCHIVELOG=false \
     ARCHIVELOG_DIR_NAME=archive_logs \
@@ -81,7 +83,7 @@ ENV PATH=$ORACLE_HOME/bin:$ORACLE_HOME/OPatch/:/usr/sbin:$PATH \
 # Copy files needed during both installation and runtime
 # -------------
 COPY $SETUP_LINUX_FILE $CHECK_SPACE_FILE $INSTALL_DIR/
-COPY $RUN_FILE $START_FILE $CREATE_DB_FILE $CREATE_OBSERVER_FILE $CONFIG_RSP $PWD_FILE $CHECK_DB_FILE $USER_SCRIPTS_FILE $RELINK_BINARY_FILE $ORACLE_BASE/
+COPY $RUN_FILE $START_FILE $CREATE_DB_FILE $CREATE_OBSERVER_FILE $CONFIG_RSP $PWD_FILE $CHECK_DB_FILE $USER_SCRIPTS_FILE $RELINK_BINARY_FILE $CONFIG_TCPS_FILE $ORACLE_BASE/
 
 RUN chmod ug+x $INSTALL_DIR/*.sh && \
     sync && \
@@ -130,7 +132,10 @@ RUN $ORACLE_BASE/oraInventory/orainstRoot.sh && \
 USER oracle
 WORKDIR /home/oracle
 
-HEALTHCHECK --interval=1m --start-period=5m \
+# Add a bashrc file to capitalize ORACLE_SID in the environment
+RUN echo 'ORACLE_SID=${ORACLE_SID:-ORCLCDB}; export ORACLE_SID=${ORACLE_SID^^}' > .bashrc
+
+HEALTHCHECK --interval=1m --start-period=5m --timeout=30s \
    CMD "$ORACLE_BASE/$CHECK_DB_FILE" >/dev/null || exit 1
 
 # Define default command to start Oracle Database. 

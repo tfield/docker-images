@@ -264,7 +264,7 @@ runAgent(){
    then
       if [ ! "$(docker ps -a -f "name=$AI" --format '{{.Names}}')" ]
       then
-         echo "INFO: Starting new container"
+         echo "INFO: Starting new container."
           if [ -f "$CONFDIR"/config.properties ]; then
               docker run -d --env-file "$CONFDIR"/config.properties -v "$PV":/app --group-add "$groupId" --name "$AI"  "$imageName"
           else
@@ -312,7 +312,7 @@ runAgent(){
   then
       if [ ! "$(podman ps -a -f "name=$AI" --format '{{.Names}}')" ]
       then
-         echo "INFO: Starting new container"
+         echo "INFO: Starting new container."
           if [ -f "$CONFDIR"/config.properties ]; then
             podman run -d --env-file "$CONFDIR"/config.properties -v "$PV":/app --group-add "$groupId" --name "$AI"  "$imageName"
           else
